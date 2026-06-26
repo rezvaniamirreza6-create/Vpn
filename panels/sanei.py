@@ -20,15 +20,26 @@ class ThreeXUIPanel:
         self._logged_in = False
 
     async def _get_session(self) -> aiohttp.ClientSession:
+        # هر بار یه session جدید با cookie_jar مشترک
         if self._session is None or self._session.closed:
             connector = aiohttp.TCPConnector(ssl=False)
-            self._session = aiohttp.ClientSession(connector=connector)
+            # cookie_jar مهمه - باید همون session برای CSRF و login استفاده بشه
+            self._session = aiohttp.ClientSession(
+                connector=connector,
+                cookie_jar=aiohttp.CookieJar(unsafe=True)
+            )
         return self._session
 
     async def login(self) -> bool:
+        # session رو reset کن تا cookie تازه بگیره
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
+        self._logged_in = False
+
         session = await self._get_session()
         try:
-            # Step 1: Get CSRF token
+            # Step 1: GET csrf-token (cookie ذخیره میشه توی session)
             async with session.get(
                 f"{self.base_url}/csrf-token",
                 timeout=aiohttp.ClientTimeout(total=15),
@@ -39,9 +50,9 @@ class ThreeXUIPanel:
                     return False
                 data = await resp.json(content_type=None)
                 csrf_token = data.get("obj", "")
-                logger.info(f"Got CSRF token: {csrf_token[:10]}...")
+                logger.info(f"Got CSRF token OK")
 
-            # Step 2: Login with CSRF token
+            # Step 2: POST login با همون session (cookie خودکار ارسال میشه)
             async with session.post(
                 f"{self.base_url}/login",
                 data={"username": self.username, "password": self.password},
@@ -58,7 +69,7 @@ class ThreeXUIPanel:
                 return False
 
         except Exception as e:
-            logger.error(f"Login error: {e}")
+            logger.error(f"Login error: {type(e).__name__}: {e}")
             return False
 
     async def _request(self, method: str, endpoint: str, **kwargs) -> Optional[dict]:
@@ -73,10 +84,11 @@ class ThreeXUIPanel:
                 timeout=aiohttp.ClientTimeout(total=30),
                 **kwargs
             ) as resp:
-                if resp.status == 401 or resp.status == 403:
+                if resp.status in (401, 403):
                     self._logged_in = False
                     if not await self.login():
                         return None
+                    session = await self._get_session()
                     async with session.request(
                         method, url, ssl=False,
                         timeout=aiohttp.ClientTimeout(total=30),
@@ -85,7 +97,7 @@ class ThreeXUIPanel:
                         return await resp2.json(content_type=None)
                 return await resp.json(content_type=None)
         except Exception as e:
-            logger.error(f"Request error [{endpoint}]: {e}")
+            logger.error(f"Request error [{endpoint}]: {type(e).__name__}: {e}")
             return None
 
     async def add_client(self, inbound_id: int, email: str, traffic_gb: int, days: int) -> Optional[dict]:
@@ -115,7 +127,9 @@ class ThreeXUIPanel:
         return None
 
     async def get_client_traffic(self, email: str) -> Optional[dict]:
-        data = await self._request("GET", f"/panel/api/inbounds/getClientTraffics/{email}")
+        data = await self._request(
+            "GET", f"/panel/api/inbounds/getClientTraffics/{email}"
+        )
         if data and data.get("success"):
             return data.get("obj")
         return None
@@ -139,3 +153,4 @@ class ThreeXUIPanel:
 
 
 panel = ThreeXUIPanel()
+    
