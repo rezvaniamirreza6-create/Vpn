@@ -141,8 +141,15 @@ async def cmd_start(msg: Message, state: FSMContext):
 
     if not is_admin:
         async with AsyncSessionLocal() as db:
+            verify_enabled = await crud.get_setting(db, "phone_verify_enabled", "true")
             db_user = await crud.get_user(db, msg.from_user.id)
-        if not db_user or (not db_user.phone and not db_user.phone_exempt):
+            pre_exempt = await crud.is_username_pre_exempt(db, msg.from_user.username) if not db_user else False
+        needs_phone = (
+            verify_enabled == "true"
+            and not pre_exempt
+            and (not db_user or (not db_user.phone and not db_user.phone_exempt))
+        )
+        if needs_phone:
             await msg.answer(
                 "🔐 برای شروع، لطفاً برای احراز هویت شماره تلفن خودتون رو با دکمه‌ی زیر ارسال کنید.\n"
                 "⚠️ فقط شماره ایران قبول می‌شه و باید شماره‌ی خودتون باشه (نه شماره‌ی شخص دیگه).",
@@ -601,7 +608,12 @@ async def do_renew(cb: CallbackQuery):
             return
         user = await crud.get_user(db, cb.from_user.id)
         if user.wallet < plan.price:
-            await cb.answer("❌ موجودی کافی نیست. اول کیف پول را شارژ کنید.", show_alert=True)
+            card = await crud.get_setting(db, "card_number", "")
+            await cb.answer()
+            await cb.message.edit_text(
+                f"❌ موجودی کافی نیست!\n\nموجودی: {int(user.wallet):,}\nلازم: {int(plan.price):,}\n\nکیف پول را شارژ کنید:",
+                reply_markup=wallet_kb(has_card=bool(card))
+            )
             return
         try:
             await panel.delete_client(svc.inbound_id, svc.panel_uuid, email=svc.panel_email)

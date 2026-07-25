@@ -14,7 +14,7 @@ from bot.keyboards import (
     admin_menu_kb, admin_plans_kb, admin_plan_detail_kb, admin_cats_kb,
     admin_cat_detail_kb, admin_settings_kb, lottery_admin_kb, admin_admins_kb,
     back_kb, payment_confirm_kb, main_menu_kb, plan_cat_select_kb, admin_plans_select_kb,
-    referral_services_select_kb
+    referral_services_select_kb, phone_list_nav_kb
 )
 from config import config
 
@@ -37,6 +37,15 @@ async def is_admin(uid, perm=None):
         if not a:
             return False
         return crud.admin_has_perm(a, perm) if perm else True
+
+
+async def resolve_user_input(db, text):
+    """Accepts either a numeric telegram ID or a @username and returns the
+    matching User row (or None). Lets admins use whichever they have handy."""
+    text = text.strip()
+    if text.lstrip("-").isdigit():
+        return await crud.get_user(db, int(text))
+    return await crud.search_user(db, text)
 
 
 class PlanState(StatesGroup):
@@ -85,7 +94,20 @@ async def admin_stats(msg: Message):
         users = await crud.get_user_count(db)
         services = await crud.get_service_count(db)
         pending = await crud.get_pending_card_payments(db)
-    await msg.answer(f"📊 کاربران: {users}\n📦 سرویس فعال: {services}\n💳 پرداخت در انتظار: {len(pending)}")
+        buyers = await crud.get_purchasing_users_count(db)
+        total_purchases = await crud.get_total_purchases_count(db)
+        total_gb = await crud.get_total_purchased_traffic_gb(db)
+    await msg.answer(
+        f"📊 <b>آمار ربات</b>\n\n"
+        f"👥 کل کاربران: {users}\n"
+        f"📦 سرویس فعال: {services}\n"
+        f"💳 پرداخت در انتظار: {len(pending)}\n\n"
+        f"🛒 تعداد کاربرانی که خرید کردن: {buyers}\n"
+        f"🧾 تعداد کل خریدها (سرویس): {total_purchases}\n"
+        f"📊 مجموع حجم خریداری‌شده: {total_gb:,}GB\n"
+        f"<i>(پلن‌های نامحدود تو این مجموع حساب نمی‌شن)</i>",
+        parse_mode="HTML"
+    )
 
 
 @router.message(F.text == "📢 پیام همگانی")
@@ -530,26 +552,21 @@ async def ban_start(msg: Message, state: FSMContext):
     if not await is_admin(msg.from_user.id, "ban"):
         return
     await state.set_state(BanState.waiting_id)
-    await msg.answer("🆔 آیدی عددی کاربر:", reply_markup=back_kb("cancel"))
+    await msg.answer("🆔 آیدی عددی یا یوزرنیم کاربر:", reply_markup=back_kb("cancel"))
 
 
 @router.message(BanState.waiting_id)
 async def do_ban(msg: Message, state: FSMContext):
-    try:
-        tid = int(msg.text.strip())
-    except ValueError:
-        await msg.answer("❌ عدد وارد کنید.")
-        return
     async with AsyncSessionLocal() as db:
-        user = await crud.get_user(db, tid)
+        user = await resolve_user_input(db, msg.text)
         if not user:
             await msg.answer("❌ یافت نشد.")
             return
         if user.status == UserStatus.BANNED:
-            await crud.unban_user(db, tid)
+            await crud.unban_user(db, user.telegram_id)
             await msg.answer(f"✅ {user.full_name} از بن خارج شد.")
         else:
-            await crud.ban_user(db, tid)
+            await crud.ban_user(db, user.telegram_id)
             await msg.answer(f"🚫 {user.full_name} بن شد.")
     await state.clear()
 
@@ -559,22 +576,17 @@ async def adjust_start(msg: Message, state: FSMContext):
     if not await is_admin(msg.from_user.id, "wallet"):
         return
     await state.set_state(AdjustState.waiting_id)
-    await msg.answer("🆔 آیدی عددی کاربر:", reply_markup=back_kb("cancel"))
+    await msg.answer("🆔 آیدی عددی یا یوزرنیم کاربر:", reply_markup=back_kb("cancel"))
 
 
 @router.message(AdjustState.waiting_id)
 async def adjust_id(msg: Message, state: FSMContext):
-    try:
-        tid = int(msg.text.strip())
-    except ValueError:
-        await msg.answer("❌ عدد وارد کنید.")
-        return
     async with AsyncSessionLocal() as db:
-        user = await crud.get_user(db, tid)
+        user = await resolve_user_input(db, msg.text)
     if not user:
         await msg.answer("❌ یافت نشد.")
         return
-    await state.update_data(tid=tid)
+    await state.update_data(tid=user.telegram_id)
     await state.set_state(AdjustState.waiting_amount)
     await msg.answer(f"👤 {user.full_name}\n💰 موجودی: {int(user.wallet):,}\n\nمقدار تغییر (+ یا -):")
 
@@ -659,7 +671,8 @@ async def admin_settings(msg: Message):
     async with AsyncSessionLocal() as db:
         test_enabled = await crud.get_setting(db, "free_test_enabled", "true")
         sub_https = await crud.get_setting(db, "sub_https", "true")
-    await msg.answer("⚙️ تنظیمات", reply_markup=admin_settings_kb(test_enabled == "true", sub_https == "true"))
+        phone_verify = await crud.get_setting(db, "phone_verify_enabled", "true")
+    await msg.answer("⚙️ تنظیمات", reply_markup=admin_settings_kb(test_enabled == "true", sub_https == "true", phone_verify == "true"))
 
 
 @router.callback_query(F.data == "toggle_free_test")
@@ -671,8 +684,9 @@ async def toggle_free_test(cb: CallbackQuery):
         new_val = "false" if current == "true" else "true"
         await crud.set_setting(db, "free_test_enabled", new_val)
         sub_https = await crud.get_setting(db, "sub_https", "true")
+        phone_verify = await crud.get_setting(db, "phone_verify_enabled", "true")
     await cb.answer("✅ تست رایگان روشن شد." if new_val == "true" else "✅ تست رایگان خاموش شد.", show_alert=True)
-    await cb.message.edit_reply_markup(reply_markup=admin_settings_kb(new_val == "true", sub_https == "true"))
+    await cb.message.edit_reply_markup(reply_markup=admin_settings_kb(new_val == "true", sub_https == "true", phone_verify == "true"))
 
 
 @router.callback_query(F.data == "toggle_sub_https")
@@ -684,10 +698,93 @@ async def toggle_sub_https(cb: CallbackQuery):
         new_val = "false" if current == "true" else "true"
         await crud.set_setting(db, "sub_https", new_val)
         test_enabled = await crud.get_setting(db, "free_test_enabled", "true")
+        phone_verify = await crud.get_setting(db, "phone_verify_enabled", "true")
     panel.sub_https = (new_val == "true")
     scheme = "https" if panel.sub_https else "http"
     await cb.answer(f"✅ لینک ساب از این به بعد با {scheme}:// ساخته می‌شود.", show_alert=True)
-    await cb.message.edit_reply_markup(reply_markup=admin_settings_kb(test_enabled == "true", new_val == "true"))
+    await cb.message.edit_reply_markup(reply_markup=admin_settings_kb(test_enabled == "true", new_val == "true", phone_verify == "true"))
+
+
+@router.callback_query(F.data == "toggle_phone_verify")
+async def toggle_phone_verify(cb: CallbackQuery):
+    if not await is_admin(cb.from_user.id, "settings"):
+        return
+    async with AsyncSessionLocal() as db:
+        current = await crud.get_setting(db, "phone_verify_enabled", "true")
+        new_val = "false" if current == "true" else "true"
+        await crud.set_setting(db, "phone_verify_enabled", new_val)
+        test_enabled = await crud.get_setting(db, "free_test_enabled", "true")
+        sub_https = await crud.get_setting(db, "sub_https", "true")
+    await cb.answer("✅ احراز هویت شماره روشن شد." if new_val == "true" else "✅ احراز هویت شماره خاموش شد.", show_alert=True)
+    await cb.message.edit_reply_markup(reply_markup=admin_settings_kb(test_enabled == "true", sub_https == "true", new_val == "true"))
+
+
+class ExemptUsernameState(StatesGroup):
+    username = State()
+
+
+@router.callback_query(F.data == "exempt_username_start")
+async def exempt_username_start(cb: CallbackQuery, state: FSMContext):
+    if not await is_admin(cb.from_user.id, "settings"):
+        return
+    await state.set_state(ExemptUsernameState.username)
+    await cb.message.answer("🔑 یوزرنیم کاربری که می‌خوای از احراز هویت شماره استثنا بشه رو بفرست (با یا بدون @):")
+
+
+@router.message(ExemptUsernameState.username)
+async def exempt_username_apply(msg: Message, state: FSMContext):
+    username = msg.text.strip().lstrip("@")
+    if not username:
+        await msg.answer("❌ یوزرنیم نامعتبر است.")
+        return
+    await state.clear()
+    async with AsyncSessionLocal() as db:
+        result = await crud.exempt_by_username(db, username)
+    if result == "existing":
+        await msg.answer(f"✅ کاربر @{username} از احراز هویت شماره استثنا شد.")
+    else:
+        await msg.answer(f"✅ یوزرنیم @{username} ثبت شد. این کاربر هنوز ربات رو استارت نکرده — همین که استارت بزنه، خودکار استثنا می‌شه.")
+
+
+# ---------------- Phone number list ----------------
+
+@router.message(F.text == "📱 لیست شماره‌ها")
+async def phone_list_start(msg: Message):
+    if not await is_admin(msg.from_user.id, "user_manage"):
+        return
+    await _send_phone_list_page(msg, page=0)
+
+
+async def _send_phone_list_page(msg_or_cb, page):
+    per_page = 10
+    async with AsyncSessionLocal() as db:
+        users = await crud.get_users_page(db, offset=page * per_page, limit=per_page + 1)
+    has_next = len(users) > per_page
+    users = users[:per_page]
+    if not users and page == 0:
+        text = "هیچ کاربری ثبت نشده."
+    else:
+        lines = [f"📱 <b>لیست شماره‌ها (صفحه {page+1}):</b>\n"]
+        for u in users:
+            uname = f"@{u.username}" if u.username else "بدون یوزرنیم"
+            phone = u.phone or "ثبت‌نشده"
+            lines.append(f"👤 {u.full_name or '-'} | {uname}\n   🆔 {u.telegram_id} | 📱 {phone}")
+        text = "\n".join(lines)
+    kb = phone_list_nav_kb(page, has_next)
+    if isinstance(msg_or_cb, CallbackQuery):
+        await msg_or_cb.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    else:
+        await msg_or_cb.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("phonelist:"))
+async def phone_list_page(cb: CallbackQuery):
+    if not await is_admin(cb.from_user.id, "user_manage"):
+        return
+    page = int(cb.data.split(":")[1])
+    await _send_phone_list_page(cb, page)
+
+
 
 
 SETTING_MAP = {
@@ -813,16 +910,21 @@ async def toggle_perm(cb: CallbackQuery, state: FSMContext):
 @router.callback_query(F.data == "perms_done", AdminAddState.selecting_perms)
 async def perms_done(cb: CallbackQuery, state: FSMContext):
     await state.set_state(AdminAddState.waiting_id)
-    await cb.message.edit_text("🆔 آیدی عددی:")
+    await cb.message.edit_text("🆔 آیدی عددی یا یوزرنیم کاربر مورد نظر:")
 
 
 @router.message(AdminAddState.waiting_id)
 async def do_add_admin(msg: Message, state: FSMContext):
-    try:
-        tid = int(msg.text.strip())
-    except ValueError:
-        await msg.answer("❌ عدد وارد کنید.")
-        return
+    text = msg.text.strip()
+    if text.lstrip("-").isdigit():
+        tid = int(text)
+    else:
+        async with AsyncSessionLocal() as db:
+            found = await crud.search_user(db, text)
+        if not found:
+            await msg.answer("❌ کاربری با این یوزرنیم پیدا نشد. اگه کاربر هنوز ربات رو استارت نزده، آیدی عددیش رو بفرست.")
+            return
+        tid = found.telegram_id
     data = await state.get_data()
     perms = data.get("selected_perms", [])
     try:

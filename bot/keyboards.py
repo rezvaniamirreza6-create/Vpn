@@ -2,6 +2,18 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 
+def phone_list_nav_kb(page, has_next):
+    b = InlineKeyboardBuilder()
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️ قبلی", callback_data=f"phonelist:{page-1}"))
+    if has_next:
+        nav.append(InlineKeyboardButton(text="بعدی ▶️", callback_data=f"phonelist:{page+1}"))
+    if nav:
+        b.row(*nav)
+    return b.as_markup()
+
+
 def phone_request_kb():
     b = ReplyKeyboardBuilder()
     b.row(KeyboardButton(text="📱 ارسال شماره من", request_contact=True))
@@ -32,6 +44,7 @@ ADMIN_MENU_BUTTONS = [
     ("📈 برترین معرف‌ها", "stats"),
     ("💎 برترین خریداران", "stats"),
     ("🔍 جستجوی کاربر", "user_manage"),
+    ("📱 لیست شماره‌ها", "user_manage"),
     ("♻️ ریست تست رایگان", "settings"),
     ("🗑 حذف سرویس‌های منقضی", "plans"),
     ("🔒 بستن سرویس‌های زیرمجموعه‌ای", "plans"),
@@ -191,7 +204,7 @@ def admin_cat_detail_kb(cat_id):
     return b.as_markup()
 
 
-def admin_settings_kb(test_enabled=True, sub_https=True):
+def admin_settings_kb(test_enabled=True, sub_https=True, phone_verify=True):
     b = InlineKeyboardBuilder()
     items = [
         ("💳 شماره کارت", "set_card"), ("👤 نام صاحب کارت", "set_card_holder"),
@@ -209,6 +222,9 @@ def admin_settings_kb(test_enabled=True, sub_https=True):
     b.row(InlineKeyboardButton(text=test_toggle, callback_data="toggle_free_test"))
     sub_toggle = "🔓 تغییر لینک ساب به http" if sub_https else "🔒 تغییر لینک ساب به https"
     b.row(InlineKeyboardButton(text=sub_toggle, callback_data="toggle_sub_https"))
+    phone_toggle = "🔴 خاموش کردن احراز هویت شماره" if phone_verify else "🟢 روشن کردن احراز هویت شماره"
+    b.row(InlineKeyboardButton(text=phone_toggle, callback_data="toggle_phone_verify"))
+    b.row(InlineKeyboardButton(text="🔑 استثنای یوزرنیم از احراز هویت", callback_data="exempt_username_start"))
     return b.as_markup()
 
 

@@ -97,8 +97,15 @@ class PhoneVerifyMiddleware(BaseMiddleware):
                     from database.db import AsyncSessionLocal
                     from database import crud
                     async with AsyncSessionLocal() as db:
+                        verify_enabled = await crud.get_setting(db, "phone_verify_enabled", "true")
                         db_user = await crud.get_user(db, user.id)
-                    if not db_user or (not db_user.phone and not db_user.phone_exempt):
+                        pre_exempt = await crud.is_username_pre_exempt(db, user.username) if not db_user else False
+                    needs_phone = (
+                        verify_enabled == "true"
+                        and not pre_exempt
+                        and (not db_user or (not db_user.phone and not db_user.phone_exempt))
+                    )
+                    if needs_phone:
                         from bot.keyboards import phone_request_kb
                         msg_text = "🔐 برای استفاده از ربات، لطفاً اول شماره تلفنتون رو با دکمه‌ی زیر ارسال کنید."
                         try:

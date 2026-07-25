@@ -102,6 +102,26 @@ async def get_user_count(db):
     return r.scalar()
 
 
+async def get_purchasing_users_count(db):
+    """Distinct users who have at least one real (non-test) service."""
+    r = await db.execute(select(func.count(func.distinct(Service.user_id))).where(Service.is_test == False))
+    return r.scalar() or 0
+
+
+async def get_total_purchased_traffic_gb(db):
+    """Sum of traffic (GB) across real (non-test) services. Plans with
+    traffic_gb=0 mean 'unlimited' and are counted as 0 here since they
+    have no fixed amount to add."""
+    r = await db.execute(select(func.sum(Service.traffic_gb)).where(Service.is_test == False))
+    return r.scalar() or 0
+
+
+async def get_total_purchases_count(db):
+    """Total number of real (non-test) services ever created (purchase count)."""
+    r = await db.execute(select(func.count()).select_from(Service).where(Service.is_test == False))
+    return r.scalar() or 0
+
+
 async def count_referrals(db, telegram_id):
     r = await db.execute(select(func.count()).select_from(User).where(User.referred_by == telegram_id))
     return r.scalar()
@@ -398,6 +418,44 @@ async def set_user_phone(db, telegram_id, phone):
 async def set_phone_exempt(db, telegram_id, exempt):
     await db.execute(update(User).where(User.telegram_id == telegram_id).values(phone_exempt=exempt))
     await db.commit()
+
+
+async def get_user_by_username(db, username):
+    username = username.strip().lstrip("@")
+    r = await db.execute(select(User).where(User.username == username))
+    return r.scalar_one_or_none()
+
+
+async def exempt_by_username(db, username):
+    """Exempts a user from phone verification by username. If they already
+    exist, flags them directly. If not (haven't started the bot yet), the
+    username is remembered so the exemption applies automatically once
+    they do."""
+    username = username.strip().lstrip("@")
+    user = await get_user_by_username(db, username)
+    if user:
+        await set_phone_exempt(db, user.telegram_id, True)
+        return "existing"
+    raw = await get_setting(db, "phone_exempt_usernames", "[]")
+    lst = json.loads(raw or "[]")
+    uname_lower = username.lower()
+    if uname_lower not in [u.lower() for u in lst]:
+        lst.append(username)
+        await set_setting(db, "phone_exempt_usernames", json.dumps(lst))
+    return "pending"
+
+
+async def is_username_pre_exempt(db, username):
+    if not username:
+        return False
+    raw = await get_setting(db, "phone_exempt_usernames", "[]")
+    lst = json.loads(raw or "[]")
+    return username.lower() in [u.lower() for u in lst]
+
+
+async def get_users_page(db, offset=0, limit=10):
+    r = await db.execute(select(User).order_by(User.id.desc()).offset(offset).limit(limit))
+    return r.scalars().all()
 
 
 async def get_expired_active_services(db):
