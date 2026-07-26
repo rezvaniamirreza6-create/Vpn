@@ -2,6 +2,13 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMar
 from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
 
 
+def templates_list_kb(templates):
+    b = InlineKeyboardBuilder()
+    for key, info in templates.items():
+        b.row(InlineKeyboardButton(text=info["label"], callback_data=f"tpl:{key}"))
+    return b.as_markup()
+
+
 def phone_list_nav_kb(page, has_next):
     b = InlineKeyboardBuilder()
     nav = []
@@ -45,6 +52,7 @@ ADMIN_MENU_BUTTONS = [
     ("💎 برترین خریداران", "stats"),
     ("🔍 جستجوی کاربر", "user_manage"),
     ("📱 لیست شماره‌ها", "user_manage"),
+    ("📝 مدیریت متن‌ها", "settings"),
     ("♻️ ریست تست رایگان", "settings"),
     ("🗑 حذف سرویس‌های منقضی", "plans"),
     ("🔒 بستن سرویس‌های زیرمجموعه‌ای", "plans"),

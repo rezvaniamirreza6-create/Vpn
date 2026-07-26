@@ -122,6 +122,12 @@ async def get_total_purchases_count(db):
     return r.scalar() or 0
 
 
+async def get_unlimited_purchases_count(db):
+    """Count of real (non-test) purchases that were unlimited-traffic plans (traffic_gb=0)."""
+    r = await db.execute(select(func.count()).select_from(Service).where(Service.is_test == False, Service.traffic_gb == 0))
+    return r.scalar() or 0
+
+
 async def count_referrals(db, telegram_id):
     r = await db.execute(select(func.count()).select_from(User).where(User.referred_by == telegram_id))
     return r.scalar()
@@ -384,7 +390,7 @@ async def search_user(db, query):
     query = query.strip().lstrip("@")
     if query.isdigit():
         return await get_user(db, int(query))
-    r = await db.execute(select(User).where(User.username == query))
+    r = await db.execute(select(User).where(func.lower(User.username) == query.lower()))
     return r.scalar_one_or_none()
 
 
@@ -422,7 +428,7 @@ async def set_phone_exempt(db, telegram_id, exempt):
 
 async def get_user_by_username(db, username):
     username = username.strip().lstrip("@")
-    r = await db.execute(select(User).where(User.username == username))
+    r = await db.execute(select(User).where(func.lower(User.username) == username.lower()))
     return r.scalar_one_or_none()
 
 

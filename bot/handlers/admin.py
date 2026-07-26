@@ -14,8 +14,9 @@ from bot.keyboards import (
     admin_menu_kb, admin_plans_kb, admin_plan_detail_kb, admin_cats_kb,
     admin_cat_detail_kb, admin_settings_kb, lottery_admin_kb, admin_admins_kb,
     back_kb, payment_confirm_kb, main_menu_kb, plan_cat_select_kb, admin_plans_select_kb,
-    referral_services_select_kb, phone_list_nav_kb
+    referral_services_select_kb, phone_list_nav_kb, templates_list_kb
 )
+from bot.templates import TEMPLATES
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,7 @@ async def admin_stats(msg: Message):
         buyers = await crud.get_purchasing_users_count(db)
         total_purchases = await crud.get_total_purchases_count(db)
         total_gb = await crud.get_total_purchased_traffic_gb(db)
+        unlimited_count = await crud.get_unlimited_purchases_count(db)
     await msg.answer(
         f"📊 <b>آمار ربات</b>\n\n"
         f"👥 کل کاربران: {users}\n"
@@ -105,7 +107,8 @@ async def admin_stats(msg: Message):
         f"🛒 تعداد کاربرانی که خرید کردن: {buyers}\n"
         f"🧾 تعداد کل خریدها (سرویس): {total_purchases}\n"
         f"📊 مجموع حجم خریداری‌شده: {total_gb:,}GB\n"
-        f"<i>(پلن‌های نامحدود تو این مجموع حساب نمی‌شن)</i>",
+        f"♾ تعداد خریدهای نامحدود: {unlimited_count}\n"
+        f"<i>(حجم پلن‌های نامحدود تو عدد بالا حساب نمی‌شه، برای همین جدا شمردیمشون)</i>",
         parse_mode="HTML"
     )
 
@@ -1787,3 +1790,84 @@ async def cancel_select_mode(cb: CallbackQuery, state: FSMContext):
     async with AsyncSessionLocal() as db:
         plans = await crud.get_all_plans(db)
     await cb.message.edit_text("📦 مدیریت پلن‌ها", reply_markup=admin_plans_kb(plans))
+
+
+# ---------------- Editable message templates ----------------
+
+class TemplateEditState(StatesGroup):
+    new_text = State()
+
+
+@router.message(F.text == "📝 مدیریت متن‌ها")
+async def templates_menu(msg: Message):
+    if not await is_admin(msg.from_user.id, "settings"):
+        return
+    await msg.answer("📝 کدوم متن رو می‌خوای تغییر بدی؟", reply_markup=templates_list_kb(TEMPLATES))
+
+
+@router.callback_query(F.data.startswith("tpl:"))
+async def template_detail(cb: CallbackQuery):
+    if not await is_admin(cb.from_user.id, "settings"):
+        return
+    key = cb.data.split(":", 1)[1]
+    info = TEMPLATES.get(key)
+    if not info:
+        await cb.answer("یافت نشد!", show_alert=True)
+        return
+    async with AsyncSessionLocal() as db:
+        current = await crud.get_setting(db, key, info["default"])
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="✏️ ویرایش", callback_data=f"tpl_edit:{key}"))
+    b.row(InlineKeyboardButton(text="♻️ برگرداندن به پیش‌فرض", callback_data=f"tpl_reset:{key}"))
+    await cb.message.edit_text(
+        f"📝 <b>{info['label']}</b>\n\n"
+        f"متن فعلی:\n<code>{current}</code>\n\n"
+        f"متغیرهای قابل استفاده:\n{info['vars']}",
+        parse_mode="HTML",
+        reply_markup=b.as_markup()
+    )
+
+
+@router.callback_query(F.data.startswith("tpl_edit:"))
+async def template_edit_start(cb: CallbackQuery, state: FSMContext):
+    if not await is_admin(cb.from_user.id, "settings"):
+        return
+    key = cb.data.split(":", 1)[1]
+    info = TEMPLATES.get(key)
+    if not info:
+        await cb.answer("یافت نشد!", show_alert=True)
+        return
+    await state.update_data(tpl_key=key)
+    await state.set_state(TemplateEditState.new_text)
+    await cb.message.answer(
+        f"✏️ متن جدید رو بفرست. حتماً از همین متغیرها استفاده کن (دقیقاً با همین علامت‌های {{}}):\n{info['vars']}"
+    )
+
+
+@router.message(TemplateEditState.new_text)
+async def template_edit_apply(msg: Message, state: FSMContext):
+    data = await state.get_data()
+    key = data.get("tpl_key")
+    info = TEMPLATES.get(key)
+    if not info:
+        await state.clear()
+        await msg.answer("❌ خطا، دوباره امتحان کن.")
+        return
+    async with AsyncSessionLocal() as db:
+        await crud.set_setting(db, key, msg.text)
+    await state.clear()
+    await msg.answer(f"✅ متن «{info['label']}» بروزرسانی شد.")
+
+
+@router.callback_query(F.data.startswith("tpl_reset:"))
+async def template_reset(cb: CallbackQuery):
+    if not await is_admin(cb.from_user.id, "settings"):
+        return
+    key = cb.data.split(":", 1)[1]
+    info = TEMPLATES.get(key)
+    if not info:
+        await cb.answer("یافت نشد!", show_alert=True)
+        return
+    async with AsyncSessionLocal() as db:
+        await crud.set_setting(db, key, info["default"])
+    await cb.answer("✅ به حالت پیش‌فرض برگشت.", show_alert=True)

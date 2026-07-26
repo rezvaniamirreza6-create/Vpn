@@ -14,6 +14,7 @@ from database.db import AsyncSessionLocal, TransactionType, PaymentMethod, UserS
 from database import crud
 from panels.sanei import panel
 from bot.keyboards import main_menu_kb, categories_kb, plans_kb, confirm_plan_kb, wallet_kb, charge_amounts_kb, service_detail_kb, back_kb, force_join_kb, phone_request_kb
+from bot.templates import TEMPLATES, render
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -157,7 +158,9 @@ async def cmd_start(msg: Message, state: FSMContext):
             )
             return
 
-    welcome = f"👋 سلام {msg.from_user.first_name or 'کاربر'} عزیز!\n\n🌐 به {bot_name} خوش آمدید\n🔒 ارائه دهنده سرویس‌های VPN پرسرعت و پایدار\n\nاز منوی زیر گزینه مورد نظر را انتخاب کنید 👇"
+    async with AsyncSessionLocal() as db:
+        tpl = await crud.get_setting(db, "tpl_welcome", TEMPLATES["tpl_welcome"]["default"])
+    welcome = render(tpl, name=msg.from_user.first_name or "کاربر", bot_name=bot_name)
     if is_admin:
         from bot.keyboards import admin_menu_kb
         perms = await get_admin_perms(msg.from_user.id)
@@ -313,7 +316,10 @@ async def confirm_buy(cb: CallbackQuery, state: FSMContext):
         config_block = f"\n\n⚙️ کانفیگ مستقیم:\n<code>{locations[0]}</code>"
     users_text = "نامحدود" if plan.max_users == 0 else f"{plan.max_users} کاربر"
     traffic_text = "نامحدود" if plan.traffic_gb == 0 else f"{plan.traffic_gb}GB"
-    await cb.message.edit_text(f"🎉 <b>خرید موفق!</b>\n\n📦 {plan.name}\n📊 {traffic_text} | 📅 {plan.days} روز | 👥 {users_text}\n\n🔗 لینک سابسکریپشن (شامل همه‌ی لوکیشن‌ها):\n<code>{sub_link}</code>{config_block}\n\nبرای مشاهده به «سرویس‌های من» مراجعه کنید.", parse_mode="HTML")
+    async with AsyncSessionLocal() as db:
+        tpl = await crud.get_setting(db, "tpl_purchase_success", TEMPLATES["tpl_purchase_success"]["default"])
+    text = render(tpl, plan_name=plan.name, traffic=traffic_text, days=plan.days, users=users_text, sub_link=sub_link, config_block=config_block)
+    await cb.message.edit_text(text, parse_mode="HTML")
     await state.clear()
 
 @router.callback_query(F.data == "cancel")
@@ -359,7 +365,10 @@ async def free_test(msg: Message):
         await db.execute(text("UPDATE users SET has_used_test = 1 WHERE id = :uid"), {"uid": user.id})
         await db.commit()
     config_block = f"\n\n⚙️ کانفیگ مستقیم:\n<code>{config_link}</code>" if config_link else ""
-    await msg.answer(f"🎁 <b>سرویس تست آماده شد!</b>\n\n📊 {traffic_mb}MB | 📅 {days} روز\n\n🔗 <code>{sub_link}</code>{config_block}", parse_mode="HTML")
+    async with AsyncSessionLocal() as db:
+        tpl = await crud.get_setting(db, "tpl_test_success", TEMPLATES["tpl_test_success"]["default"])
+    text = render(tpl, traffic=traffic_mb, days=days, sub_link=sub_link, config_block=config_block)
+    await msg.answer(text, parse_mode="HTML")
 
 @router.message(F.text == "📦 سرویس‌های من")
 @router.callback_query(F.data == "my_services")
@@ -626,4 +635,6 @@ async def do_renew(cb: CallbackQuery):
         new_expiry = datetime.utcnow() + timedelta(days=plan.days)
         await crud.update_service(db, svc.id, panel_uuid=result["uuid"], expires_at=new_expiry, status=ServiceStatus.ACTIVE, panel_removed=False)
         await crud.update_wallet(db, user, -plan.price, f"تمدید {svc.panel_email}", TransactionType.DEPOSIT)
-    await cb.message.edit_text(f"✅ سرویس با موفقیت تمدید شد!\n📅 انقضای جدید: {new_expiry.strftime('%Y/%m/%d')}")
+        tpl = await crud.get_setting(db, "tpl_renew_success", TEMPLATES["tpl_renew_success"]["default"])
+    text = render(tpl, new_expiry=new_expiry.strftime('%Y/%m/%d'))
+    await cb.message.edit_text(text)
